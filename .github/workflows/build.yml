@@ -1,0 +1,96 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable Yarn
+        run: |
+          corepack enable
+          corepack prepare yarn@stable --activate
+
+      - name: Setup GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build website
+        run: |
+          yarn build
+          cp .tindmark/dist/index.html .tindmark/dist/404.html
+          # 生成静态公共文件列表，确保 GitHub Pages 能正确读取
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            let publicFolderName = 'public';
+            const configPath = path.resolve('.tindmark/config.yml');
+            if (fs.existsSync(configPath)) {
+              try {
+                const yaml = require('js-yaml');
+                const config = yaml.load(fs.readFileSync(configPath, 'utf8'));
+                if (config && config.PublicFolder) publicFolderName = config.PublicFolder;
+              } catch(e) {}
+            }
+            const publicDir = path.resolve(publicFolderName);
+            const files = [];
+            if (fs.existsSync(publicDir)) {
+              for (const item of fs.readdirSync(publicDir)) {
+                const itemPath = path.join(publicDir, item);
+                const stat = fs.statSync(itemPath);
+                if (stat.isFile()) {
+                  const ext = item.split('.').pop().toLowerCase();
+                  let type = 'other';
+                  if (['mp4','webm','mov','avi','mkv'].includes(ext)) type = 'video';
+                  else if (['jpg','jpeg','png','gif','svg','webp','bmp'].includes(ext)) type = 'image';
+                  files.push({ name: item, type, size: stat.size });
+                }
+              }
+            }
+            fs.writeFileSync(path.resolve('.tindmark/dist/public-files.json'), JSON.stringify({ files }, null, 2));
+            console.log('Generated public-files.json with', files.length, 'files');
+          "
+        env:
+          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .tindmark/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
